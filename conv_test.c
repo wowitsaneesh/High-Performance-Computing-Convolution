@@ -1,308 +1,395 @@
-// conv_test.c — CITS3402/CITS5507 A1: Fast parallel 2D convolution with OpenMP
-// Author: <Your Name> (<Student ID>)
-
-#define _POSIX_C_SOURCE 200809L
 #include <stdio.h>
 #include <stdlib.h>
+#include <unistd.h>     
 #include <string.h>
-#include <errno.h>
-#include <time.h>
-#include <unistd.h>     // getopt
-#include <math.h>
-#ifdef _OPENMP
 #include <omp.h>
-#endif
 
-// -----------------------------
-// Utility: timing (monotonic)
-// -----------------------------
-static inline double now_seconds(void) {
-    struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (double)ts.tv_sec + (double)ts.tv_nsec * 1e-9;
+static void conv2d_serial(
+		float **f, 
+		int H, 
+		int W,
+		float **g, 
+		int kH, 
+		int kW,
+		float **output) {
+    
+    // With same padding, output size = input size
+    int outH = H;
+    int outW = W;
+    
+    // Calculate padding needed
+    int padH = kH / 2;  // Padding for height
+    int padW = kW / 2;  // Padding for width
+    
+    // For each position in the output
+    for (int i = 0; i < outH; i++) {
+        for (int j = 0; j < outW; j++) {
+            
+            float sum = 0.0;
+            
+            // Apply kernel at position (i,j)
+            for (int ki = 0; ki < kH; ki++) {
+                for (int kj = 0; kj < kW; kj++) {
+                    
+                    // Calculate input coordinates with padding
+                    int fi = i + ki - padH;
+                    int fj = j + kj - padW;
+                    
+                    // Check bounds - use 0 for out-of-bounds (zero padding)
+                    if (fi >= 0 && fi < H && fj >= 0 && fj < W) {
+                        sum += f[fi][fj] * g[ki][kj];
+                    }
+                    // Out-of-bounds pixels are treated as 0 (implicit)
+                }
+            }
+            
+            output[i][j] = sum;
+        }
+    }
 }
 
-// ----------------------------------------------
-// Matrix helpers: contiguous + row pointer view
-// ----------------------------------------------
-static float **alloc_matrix(int H, int W) {
-    if (H <= 0 || W <= 0) return NULL;
-    size_t rowsz = (size_t)W * sizeof(float);
-    float **rowptrs = (float**)malloc((size_t)H * sizeof(float*));
-    float  *block   = (float*) malloc((size_t)H * rowsz); // portable on macOS
-    if (!rowptrs || !block) { free(rowptrs); free(block); return NULL; }
-    for (int i = 0; i < H; ++i) rowptrs[i] = block + (size_t)i * W;
-    return rowptrs;
+static void conv2d_omp(
+		float **f, 
+		int H, 
+		int W,
+		float **g, 
+		int kH, 
+		int kW,
+		float **output) {
+    
+    int padH = kH / 2;
+    int padW = kW / 2;
+    
+    // Collapse both outer loops for better load balancing
+    #pragma omp parallel for collapse(2) schedule(dynamic, 16)
+    for (int i = 0; i < H; i++) {
+        for (int j = 0; j < W; j++) {
+            float sum = 0.0;
+            
+            // Keep kernel loops together for cache efficiency
+            for (int ki = 0; ki < kH; ki++) {
+                for (int kj = 0; kj < kW; kj++) {
+                    int fi = i + ki - padH;
+                    int fj = j + kj - padW;
+                    
+                    if (fi >= 0 && fi < H && fj >= 0 && fj < W) {
+                        sum += f[fi][fj] * g[ki][kj];
+                    }
+                }
+            }
+            
+            output[i][j] = sum;
+        }
+    }
 }
 
-static void free_matrix(float **A) {
-    if (!A) return;
-    free(A[0]); // contiguous block
-    free(A);
+float **allocate_matrix(int H, int W) {
+    // Allocate array of row pointers
+    float **matrix = malloc(H * sizeof(float*));
+    if (matrix == NULL) {
+        fprintf(stderr, "Error: Failed to allocate row pointers\n");
+        return NULL;
+    }
+    
+    // Allocate each row
+    for (int i = 0; i < H; i++) {
+        matrix[i] = malloc(W * sizeof(float));
+        if (matrix[i] == NULL) {
+            fprintf(stderr, "Error: Failed to allocate row %d\n", i);
+            // Clean up previously allocated rows
+            for (int j = 0; j < i; j++) {
+                free(matrix[j]);
+            }
+            free(matrix);
+            return NULL;
+        }
+    }
+    
+    return matrix;
 }
 
-static void fill_random(float **A, int H, int W) {
-    for (int i = 0; i < H; ++i)
-        for (int j = 0; j < W; ++j)
-            A[i][j] = (float)drand48(); // [0,1)
+void free_matrix(float **matrix, int H) {
+    for (int i = 0; i < H; i++) {
+        free(matrix[i]);
+    }
+    free(matrix);
 }
 
-// ---------------------------------
-// File I/O per assignment spec
-// ---------------------------------
+
 static int read_matrix_txt(const char *path, float ***A, int *H, int *W) {
-    FILE *fp = fopen(path, "r");
-    if (!fp) { fprintf(stderr, "fopen(%s): %s\n", path, strerror(errno)); return -1; }
-    if (fscanf(fp, "%d %d", H, W) != 2 || *H <= 0 || *W <= 0) {
-        fprintf(stderr, "Invalid header in %s\n", path); fclose(fp); return -1;
+	FILE *fp = fopen(path, "r");	
+
+	if (!fp) {
+		fprintf(stderr, "Error: Could not open file '%s'\n", path);
+		return -1;
+	}
+
+	if ((fscanf(fp, "%d %d", H, W) != 2) || *H <= 0 || *W <= 0) {
+		fprintf(stderr, "Error: Invalid header in file '%s'\n", path);
+		fclose(fp);
+		return -1;
+	}
+
+	float **M = allocate_matrix(*H, *W);
+
+	if (!M) {
+		fprintf(stderr, "Error: Allocation failed for '%s'\n", path);
+		fclose(fp);
+		return -1;
+	}
+
+	// Fill matrix
+	for (int i = 0; i < *H; i++) {
+		for (int j = 0; j < *W; j++) {
+			if (fscanf(fp, "%f", &M[i][j]) != 1) {
+				fprintf(stderr, "Error: Invalid data in %s at pos(%i, %i)\n", path, i, j);
+				free_matrix(M, *H);
+				fclose(fp);
+				return -1;
+			}
+		}
+	}
+	
+	fclose(fp);
+	*A = M;
+	return 0;
+}
+
+float **create_matrix(int H, int W) {
+    float **matrix = allocate_matrix(H, W);
+    if (!matrix) {
+        return NULL;
     }
-    float **M = alloc_matrix(*H, *W);
-    if (!M) { fprintf(stderr, "alloc failed %s\n", path); fclose(fp); return -1; }
-    for (int i = 0; i < *H; ++i) {
-        for (int j = 0; j < *W; ++j) {
-            if (fscanf(fp, "%f", &M[i][j]) != 1) {
-                fprintf(stderr, "Invalid data in %s at (%d,%d)\n", path, i, j);
-                free_matrix(M); fclose(fp); return -1;
+    
+    // Fill with random values between 0 and 1
+    for (int i = 0; i < H; i++) {
+        for (int j = 0; j < W; j++) {
+            matrix[i][j] = (float)rand() / RAND_MAX;
+        }
+    }
+    
+    return matrix;
+}
+
+static int write_matrix_txt(const char *path, float **matrix, int H, int W) {
+    FILE *fp = fopen(path, "w");
+    
+    if (!fp) {
+        fprintf(stderr, "Error: Could not open file '%s' for writing\n", path);
+        return -1;
+    }
+    
+    // Write header (dimensions)
+    if (fprintf(fp, "%d %d\n", H, W) < 0) {
+        fprintf(stderr, "Error: Failed to write header to '%s'\n", path);
+        fclose(fp);
+        return -1;
+    }
+    
+    // Write matrix data
+    for (int i = 0; i < H; i++) {
+        for (int j = 0; j < W; j++) {
+            if (fprintf(fp, "%.6f", matrix[i][j]) < 0) {
+                fprintf(stderr, "Error: Failed to write data to '%s' at pos(%d,%d)\n", 
+                        path, i, j);
+                fclose(fp);
+                return -1;
+            }
+            
+            // Add space between elements, newline at end of row
+            if (j < W - 1) {
+                if (fprintf(fp, " ") < 0) {
+                    fprintf(stderr, "Error: Failed to write separator to '%s'\n", path);
+                    fclose(fp);
+                    return -1;
+                }
+            } else {
+                if (fprintf(fp, "\n") < 0) {
+                    fprintf(stderr, "Error: Failed to write newline to '%s'\n", path);
+                    fclose(fp);
+                    return -1;
+                }
             }
         }
     }
+    
     fclose(fp);
-    *A = M; return 0;
-}
-
-static int write_matrix_txt(const char *path, float **A, int H, int W) {
-    FILE *fp = fopen(path, "w"); if (!fp) { fprintf(stderr, "fopen(%s): %s\n", path, strerror(errno)); return -1; }
-    fprintf(fp, "%d %d\n", H, W);
-    for (int i = 0; i < H; ++i) {
-        for (int j = 0; j < W; ++j) {
-            fprintf(fp, (j+1==W)? "%g\n" : "%g ", A[i][j]);
-        }
-    }
-    fclose(fp); return 0;
-}
-
-// -------------------------------------------------
-// SAME-padding 2D convolution — serial reference
-// -------------------------------------------------
-static void conv2d_serial(float **f, int H, int W,
-                          float **g, int kH, int kW,
-                          float **out) {
-    int padY = kH / 2;
-    int padX = kW / 2;
-
-    for (int y = 0; y < H; ++y) {
-        for (int x = 0; x < W; ++x) {
-            float acc = 0.0f;
-            for (int ky = 0; ky < kH; ++ky) {
-                int iy = y + ky - padY;
-                if ((unsigned)iy >= (unsigned)H) continue; // out-of-bounds => zero
-                for (int kx = 0; kx < kW; ++kx) {
-                    int ix = x + kx - padX;
-                    if ((unsigned)ix >= (unsigned)W) continue;
-                    acc += f[iy][ix] * g[ky][kx];
-                }
-            }
-            out[y][x] = acc;
-        }
-    }
-}
-
-// -------------------------------------------------
-// SAME-padding 2D convolution — OpenMP parallel
-// -------------------------------------------------
-static void conv2d_omp(float **f, int H, int W,
-                       float **g, int kH, int kW,
-                       float **out) {
-    int padY = kH / 2;
-    int padX = kW / 2;
-
-    #pragma omp parallel for collapse(2) schedule(static)
-    for (int y = 0; y < H; ++y) {
-        for (int x = 0; x < W; ++x) {
-            float acc = 0.0f;
-            for (int ky = 0; ky < kH; ++ky) {
-                int iy = y + ky - padY;
-                if ((unsigned)iy >= (unsigned)H) continue;
-                for (int kx = 0; kx < kW; ++kx) {
-                    int ix = x + kx - padX;
-                    if ((unsigned)ix >= (unsigned)W) continue;
-                    acc += f[iy][ix] * g[ky][kx];
-                }
-            }
-            out[y][x] = acc;
-        }
-    }
-}
-
-// -------------------------------
-// CLI / main (with -f/-g/-o and -kH/-kW)
-// -------------------------------
-static void usage(const char *prog) {
-    fprintf(stderr,
-    "Usage: %s [options]\n"
-    "  -f <f.txt>        Input matrix f (file)\n"
-    "  -g <g.txt>        Kernel g (file)\n"
-    "  -o <o.txt>        Output file (optional)\n"
-    "  -H <int>          Generate input height (if no -f)\n"
-    "  -W <int>          Generate input width  (if no -f)\n"
-    "  -kH <int>         Generate kernel height (if no -g)\n"
-    "  -kW <int>         Generate kernel width  (if no -g)\n"
-    "  -s <int>          RNG seed for generation\n"
-    "  -t <int>          Threads (OMP_NUM_THREADS)\n"
-    "  -p <mode>         Mode: serial | omp   (default: omp)\n"
-    "  -C                Compare serial vs omp and report speedup\n"
-    "  -v                Verbose\n",
-    prog);
-}
-
-static int parse_int_arg(const char *flag, int argc, char **argv, int *out) {
-    for (int i = 1; i < argc - 1; ++i) {
-        if (strcmp(argv[i], flag) == 0) {
-            *out = atoi(argv[i+1]);
-            return 1;
-        }
-    }
     return 0;
 }
 
+void print_matrix(float **M, int rows, int cols) {
+    for (int i = 0; i < rows; i++) {
+        for (int j = 0; j < cols; j++) {
+            printf("%.2f ", M[i][j]);  // Use %f for floats, M[i][j] for access
+        }
+        printf("\n");
+    }
+}
+
 int main(int argc, char **argv) {
-    const char *fpath = NULL, *gpath = NULL, *opath = NULL;
-    int H = 0, W = 0, kH = 0, kW = 0, threads = 0, compare = 0, verbose = 0;
-    unsigned int seed = 12345;
-    enum { MODE_OMP, MODE_SERIAL } mode = MODE_OMP;
+	// Set seed for random number generation
+	srand(42);  
 
-    // Seed the RNG for drand48
-    srand48((long)seed);
+	// Create pointers to store file paths
+	const char *fpath = NULL;
+	const char *gpath = NULL;
+	const char *opath = NULL;
 
-    // Accept -kH and -kW as long options (manual scan before getopt):
-    (void)parse_int_arg("-kH", argc, argv, &kH);
-    (void)parse_int_arg("-kW", argc, argv, &kW);
+	// Create variables to store input and kernel dimensions
+	int H = 0, W = 0;
+	int kH = 0, kW = 0;
 
-    // Parse the short options with getopt
-    int opt;
-    opterr = 0; // ignore unknowns so -kH/-kW don't produce errors
-    while ((opt = getopt(argc, argv, "f:g:o:H:W:s:t:p:Cvh")) != -1) {
-        if (opt == 'h') { usage(argv[0]); return 0; }
-        switch (opt) {
-            case 'f': fpath = optarg; break;
-            case 'g': gpath = optarg; break;
-            case 'o': opath = optarg; break;
-            case 'H': H = atoi(optarg); break;
-            case 'W': W = atoi(optarg); break;
-            case 's': seed = (unsigned int)strtoul(optarg, NULL, 10); srand48((long)seed); break;
-            case 't': threads = atoi(optarg); break;
-            case 'p':
-                if (strcmp(optarg, "serial") == 0) mode = MODE_SERIAL;
-                else if (strcmp(optarg, "omp") == 0) mode = MODE_OMP;
-                else { fprintf(stderr, "-p must be serial|omp\n"); return 1; }
-                break;
-            case 'C': compare = 1; break;
-            case 'v': verbose = 1; break;
-            default: /* ignore unknowns */ break;
-        }
-    }
+	// 1) Parse -kH and -kW FIRST (before getopt)
+	// after parsing kH/kW manually
+	for (int i = 1; i < argc - 1; i++) {
+		if (strcmp(argv[i], "-kH") == 0) {
+			kH = atoi(argv[i + 1]);
+			// remove them from argv
+			for (int j = i; j < argc - 2; j++) {
+				argv[j] = argv[j + 2];
+			}
+			argc -= 2;
+			break;
+		}
+	}
 
-#ifdef _OPENMP
-    if (threads > 0) omp_set_num_threads(threads);
-    if (verbose) {
-        int nt = omp_get_max_threads();
-        fprintf(stderr, "[info] OpenMP max threads = %d\n", nt);
-    }
-#else
-    if (threads > 1 && verbose) fprintf(stderr, "[warn] OpenMP not enabled.\n");
-#endif
+	for (int i = 1; i < argc - 1; i++) {
+		if (strcmp(argv[i], "-kW") == 0) {
+			kW = atoi(argv[i + 1]);
+			for (int j = i; j < argc - 2; j++) {
+				argv[j] = argv[j + 2];
+			}
+			argc -= 2;
+			break;
+		}
+	}
 
-    // Load or generate f and g as per spec
-    float **f = NULL, **g = NULL, **out = NULL, **tmp = NULL;
-    int iH=0, iW=0, ikH=0, ikW=0;
+	// 2) Now use getopt for the rest
+	int opt;
+	opterr = 0;
+	while((opt = getopt(argc, argv, "f:g:o:H:W:")) != -1) {
+		switch(opt) {
+			case 'f': 
+				fpath = optarg;
+				break;
+			case 'g': 
+				gpath = optarg;
+				break;
+			case 'o': 
+				opath = optarg;
+				break;
+			case 'H': 
+				H = atoi(optarg);
+				break;
+			case 'W': 
+				W = atoi(optarg);
+				break;
+			default:
+				break;
+		}
+	}
 
-    // Input matrix f
-    if (fpath) {
-        if (read_matrix_txt(fpath, &f, &iH, &iW) != 0) return 1;
-    } else {
-        if (H <= 0 || W <= 0) {
-            fprintf(stderr, "Missing -f or both -H and -W\n");
-            usage(argv[0]); return 1;
-        }
-        f = alloc_matrix(H, W); if (!f) { fprintf(stderr, "alloc f failed\n"); return 1; }
-        fill_random(f, H, W); iH = H; iW = W;
-    }
+	// 2) Create or read in input and kernel from files
 
-    // Kernel g
-    if (gpath) {
-        if (read_matrix_txt(gpath, &g, &ikH, &ikW) != 0) { free_matrix(f); return 1; }
-    } else {
-        if (kH <= 0 || kW <= 0) {
-            fprintf(stderr, "Missing -g or both -kH and -kW\n");
-            usage(argv[0]); free_matrix(f); return 1;
-        }
-        g = alloc_matrix(kH, kW); if (!g) { fprintf(stderr, "alloc g failed\n"); free_matrix(f); return 1; }
-        fill_random(g, kH, kW); ikH = kH; ikW = kW;
-    }
+	// Create storage for the matrices
+	float **f = NULL, **g = NULL, **out = NULL;
 
-    if (verbose) fprintf(stderr, "[info] f: %dx%d, g: %dx%d\n", iH, iW, ikH, ikW);
+	// Create storage for the input kernel width and heights
+	int iH = 0, iW = 0, ikH = 0, ikW = 0; 
 
-    out = alloc_matrix(iH, iW);
-    if (!out) { fprintf(stderr, "alloc out failed\n"); free_matrix(f); free_matrix(g); return 1; }
 
-    // Compute (exclude I/O from timing)
-    double t0, t1;
+	// Read input matrix from file or create input matrix
+	if (fpath) {
+		if (read_matrix_txt(fpath, &f, &iH, &iW) != 0) {
+			fprintf(stderr, "Error: Failed to read input matrix\n");
+			return 1;
+		}
+	} else {
+		if (H <= 0 || W <= 0) {
+			fprintf(stderr, "Error: Missing -f or both -H and -W\n");
+			return 1;
+		}
+		// Create input matrix with H x W dimensions
+		f = create_matrix(H, W);
+		if (!f) {
+			fprintf(stderr, "Error: Failed to create input matrix\n");
+			return 1;
+		}
+		iH = H;    // Input height = H
+		iW = W;    // Input width = W
+	}
 
-    if (compare) {
-        // Serial baseline
-        tmp = alloc_matrix(iH, iW); if (!tmp) { fprintf(stderr, "alloc tmp failed\n"); goto cleanup; }
-        t0 = now_seconds();
-        conv2d_serial(f, iH, iW, g, ikH, ikW, tmp);
-        t1 = now_seconds();
-        double t_serial = t1 - t0;
+	// Read kernel matrix from file or create kernel matrix  
+	if (gpath) {
+		if (read_matrix_txt(gpath, &g, &ikH, &ikW) != 0) {
+			fprintf(stderr, "Error: Failed to read kernel matrix\n");
+			return 1;
+		}
+	} else {
+		if (kH <= 0 || kW <= 0) {  // Check kH, kW (not H, W)
+			fprintf(stderr, "Error: Missing -g or both -kH and -kW\n");
+			return 1;
+		}
+		// Create kernel matrix with kH x kW dimensions
+		g = create_matrix(kH, kW);  // Use kH, kW here!
+		if (!g) {
+			fprintf(stderr, "Error: Failed to create kernel matrix\n");
+			return 1;
+		}
+		ikH = kH;  // Kernel height = kH
+		ikW = kW;  // Kernel width = kW
+	}
+	
+	// Let have a look at the matrix
+	printf("Input height: %i\n", H);
+	printf("Input width: %i\n", W);
+	printf("kernel height: %i\n", kH);
+	printf("kernel width: %i\n", kW);
 
-        // OpenMP (or serial if not compiled with OMP)
-        t0 = now_seconds();
-#ifdef _OPENMP
-        conv2d_omp(f, iH, iW, g, ikH, ikW, out);
-#else
-        conv2d_serial(f, iH, iW, g, ikH, ikW, out);
-#endif
-        t1 = now_seconds();
-        double t_omp = t1 - t0;
+    out = create_matrix(iH, iW);
 
-        float mad = 0.0f;
-        for (int i = 0; i < iH; ++i)
-            for (int j = 0; j < iW; ++j) {
-                float d = fabsf(tmp[i][j] - out[i][j]);
-                if (d > mad) mad = d;
-            }
+    if (!out) { 
+		fprintf(stderr, "Error: Allocation out failed\n"); 
+		free_matrix(f, H); 
+		free_matrix(g, W); 
+		return 1; 
+	}
 
-        printf("serial: %.6f s\n", t_serial);
-        printf("parallel: %.6f s\n", t_omp);
-        if (t_omp > 0) printf("speedup: %.2fx\n", t_serial / t_omp);
-        printf("max_abs_diff: %.6g\n", mad);
-    } else {
-        t0 = now_seconds();
-        if (mode == MODE_SERIAL) {
-            conv2d_serial(f, iH, iW, g, ikH, ikW, out);
-        } else {
-#ifdef _OPENMP
-            conv2d_omp(f, iH, iW, g, ikH, ikW, out);
-#else
-            conv2d_serial(f, iH, iW, g, ikH, ikW, out);
-#endif
-        }
-        t1 = now_seconds();
-        printf("compute_time: %.6f s\n", t1 - t0);
-    }
+	// Serial convolution
+	double start, end;
+	double cpu_time_used;
+
+	start = omp_get_wtime();
+
+    conv2d_serial(f, iH, iW, g, ikH, ikW, out);
+
+	end = omp_get_wtime();
+	cpu_time_used = (double) (end - start) ;
+
+	printf("Serial Execution:\n");
+	printf("CPU time used: %f\n", cpu_time_used);
+
+	// Parallel convolution
+	start = omp_get_wtime();
+
+    conv2d_omp(f, iH, iW, g, ikH, ikW, out);
+
+	end = omp_get_wtime();
+	cpu_time_used = (double) (end - start) ;
+
+	printf("Parallel Execution:\n");
+	printf("CPU time used: %f\n", cpu_time_used);
 
     // Optional output file
     if (opath) {
         if (write_matrix_txt(opath, out, iH, iW) != 0) {
-            fprintf(stderr, "failed to write %s\n", opath);
+            fprintf(stderr, "Error: failed to write %s\n", opath);
         }
     }
 
-cleanup:
-    free_matrix(f);
-    free_matrix(g);
-    free_matrix(out);
-    free_matrix(tmp);
-    return 0;
-}
+	free_matrix(f, H);
+	free_matrix(g, kH);
+	free_matrix(out, H);
+	return 0;
 
+}
