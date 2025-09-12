@@ -3,6 +3,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdbool.h>
 #include <unistd.h>     
 #include <string.h>
 #include <omp.h>
@@ -123,7 +124,7 @@ static int read_matrix_txt(const char *path, float ***A, int *H, int *W) {
 	FILE *fp = fopen(path, "r");	
 
 	if (!fp) {
-		fprintf(stderr, "Error: Could not open file '%s'\n", path);
+		fprintf(stderr, "Could not open file '%s'. Attempting to generate matrix\n", path);
 		return -1;
 	}
 
@@ -300,12 +301,27 @@ int main(int argc, char **argv) {
 	// Create storage for the input kernel width and heights
 	int iH = 0, iW = 0, ikH = 0, ikW = 0; 
 
+	bool inputGenerated = false;
+	bool kernelGenerated = false;
+
 
 	// Read input matrix from file or create input matrix
 	if (fpath) {
 		if (read_matrix_txt(fpath, &f, &iH, &iW) != 0) {
-			fprintf(stderr, "Error: Failed to read input matrix\n");
-			return 1;
+			// If reading fails, try to generate matrix if H and W are provided
+			if (H <= 0 || W <= 0) {
+				fprintf(stderr, "Error: Failed to read input matrix and no -H/-W provided\n");
+				return 1;
+			}
+			// Create input matrix with H x W dimensions
+			f = create_matrix(H, W);
+			if (!f) {
+				fprintf(stderr, "Error: Failed to create input matrix\n");
+				return 1;
+			}
+			inputGenerated = true;
+			iH = H;
+			iW = W;
 		}
 	} else {
 		if (H <= 0 || W <= 0) {
@@ -318,6 +334,7 @@ int main(int argc, char **argv) {
 			fprintf(stderr, "Error: Failed to create input matrix\n");
 			return 1;
 		}
+		inputGenerated = true;
 		iH = H;    // Input height = H
 		iW = W;    // Input width = W
 	}
@@ -325,23 +342,53 @@ int main(int argc, char **argv) {
 	// Read kernel matrix from file or create kernel matrix  
 	if (gpath) {
 		if (read_matrix_txt(gpath, &g, &ikH, &ikW) != 0) {
-			fprintf(stderr, "Error: Failed to read kernel matrix\n");
-			return 1;
+			// If reading fails, try to generate matrix if kH and kW are provided
+			if (kH <= 0 || kW <= 0) {
+				fprintf(stderr, "Error: Failed to read kernel matrix and no -kH/-kW provided\n");
+				free_matrix(f, iH);
+				return 1;
+			}
+			// Create kernel matrix with kH x kW dimensions
+			g = create_matrix(kH, kW);
+			if (!g) {
+				fprintf(stderr, "Error: Failed to create kernel matrix\n");
+				free_matrix(f, iH);
+				return 1;
+			}
+			kernelGenerated = true;
+			ikH = kH;
+			ikW = kW;
 		}
 	} else {
 		if (kH <= 0 || kW <= 0) {  // Check kH, kW (not H, W)
 			fprintf(stderr, "Error: Missing -g or both -kH and -kW\n");
+			free_matrix(f, iH);
 			return 1;
 		}
 		// Create kernel matrix with kH x kW dimensions
 		g = create_matrix(kH, kW);  // Use kH, kW here!
 		if (!g) {
 			fprintf(stderr, "Error: Failed to create kernel matrix\n");
+			free_matrix(f, iH);
 			return 1;
 		}
+		kernelGenerated = true;
 		ikH = kH;  // Kernel height = kH
 		ikW = kW;  // Kernel width = kW
 	}
+
+	// If we generated matrices and have file paths, save them
+    if (fpath && inputGenerated) {
+        if (write_matrix_txt(fpath, f, iH, iW) != 0) {
+            fprintf(stderr, "Error: failed to write input matrix to %s\n", fpath);
+        }
+    }
+
+    if (gpath && kernelGenerated) {
+        if (write_matrix_txt(gpath, g, ikH, ikW) != 0) {
+            fprintf(stderr, "Error: failed to write kernel matrix to %s\n", gpath);
+        }
+    }
 	
 	// Let have a look at the matrix
 	printf("Input height: %i\n", iH);
@@ -386,7 +433,7 @@ int main(int argc, char **argv) {
     // Optional output file
     if (opath) {
         if (write_matrix_txt(opath, out, iH, iW) != 0) {
-            fprintf(stderr, "Error: failed to write %s\n", opath);
+            fprintf(stderr, "Error: failed to write output to %s\n", opath);
         }
     }
 
