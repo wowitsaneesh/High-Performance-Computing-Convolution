@@ -364,7 +364,7 @@ int main(int argc, char **argv) {
 
 	start = omp_get_wtime();
 
-    conv2d_serial(f, iH, iW, g, ikH, ikW, out);
+ conv2d_serial(f, iH, iW, g, ikH, ikW, out);
 
 	end = omp_get_wtime();
 	cpu_time_used = (double) (end - start) ;
