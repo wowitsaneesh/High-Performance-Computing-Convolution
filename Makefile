@@ -1,14 +1,16 @@
-# Use whatever GCC is available on the system or loaded via modules
+# STUDENT ID : 22751096 , STUDENT NAME : JALIL INAYAT-HUSSAIN
+# STUDENT ID : 24553634 , STUDENT NAME : ANEESH KUMAR BANDARI
+
 CC ?= gcc
 CFLAGS ?= -O3 -march=native -Wall -Wextra -std=c11
 OMPFLAGS := -fopenmp
 LDFLAGS ?=
 LDLIBS ?=
 
-all: conv_test_new
+all: conv_test
 
-conv_test_new: conv_test_new.c
+conv_test: conv_test.c
 	$(CC) $(CFLAGS) $(OMPFLAGS) -o $@ $< $(LDFLAGS) $(LDLIBS)
 
 clean:
-	rm -f conv_test_new *.o *.out
+	rm -f conv_test *.o *.out
