@@ -344,17 +344,17 @@ int main(int argc, char **argv) {
 	}
 	
 	// Let have a look at the matrix
-	printf("Input height: %i\n", H);
-	printf("Input width: %i\n", W);
-	printf("kernel height: %i\n", kH);
-	printf("kernel width: %i\n", kW);
+	printf("Input height: %i\n", iH);
+	printf("Input width: %i\n", iW);
+	printf("kernel height: %i\n", ikH);
+	printf("kernel width: %i\n", ikW);
 
     out = create_matrix(iH, iW);
 
     if (!out) { 
 		fprintf(stderr, "Error: Allocation out failed\n"); 
-		free_matrix(f, H); 
-		free_matrix(g, W); 
+		if (f) free_matrix(f, iH); 
+		if (g) free_matrix(g, ikH); 
 		return 1; 
 	}
 
@@ -390,9 +390,9 @@ int main(int argc, char **argv) {
         }
     }
 
-	free_matrix(f, H);
-	free_matrix(g, kH);
-	free_matrix(out, H);
+	free_matrix(f, iH);
+	free_matrix(g, ikH);
+	free_matrix(out, iH);
 	return 0;
 
 }
