@@ -19,9 +19,19 @@ make clean      # remove executable + extras
 ## Usage
 You can either **load matrices from files** or **generate random ones**.
 
-### Generate random matrices
+### Generate random matrices 
+```bash
+./conv_test -H 1024 -W 1024 -kH 5 -kW 5 
+```
+
+### Generate random matrices and save outputs
 ```bash
 ./conv_test -H 1024 -W 1024 -kH 5 -kW 5 -o out.txt
+```
+
+### Generate random matrices and save inputs and outputs
+```bash
+./conv_test -H 1024 -W 1024 -kH 5 -kW 5 -f f.txt -g g.txt -o o.txt
 ```
 
 ### Use input files
