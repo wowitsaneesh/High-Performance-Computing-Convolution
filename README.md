@@ -1,7 +1,7 @@
 # 2D Convolution (Serial + OpenMP)
 
-# STUDENT ID : 22751096 , STUDENT NAME : JALIL INAYAT-HUSSAIN
-# STUDENT ID : 24553634 , STUDENT NAME : ANEESH KUMAR BANDARI
+STUDENT ID : 22751096 , STUDENT NAME : JALIL INAYAT-HUSSAIN
+STUDENT ID : 24553634 , STUDENT NAME : ANEESH KUMAR BANDARI
 
 This program performs 2D convolution with same (zero) padding using both a serial and a parallel (OpenMP) implementation.  
 
