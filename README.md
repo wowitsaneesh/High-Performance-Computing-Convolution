@@ -39,9 +39,21 @@ export OMP_NUM_THREADS=8
 
 ## Example SLURM (Kaya)
 ```bash
-#SBATCH --cpus-per-task=16
-#SBATCH --time=00:20:00
-module load gcc/12.2.0
-export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
-./conv_test -H 4096 -W 4096 -kH 7 -kW 7 -o out.txt
+#!/bin/bash
+ 
+#SBATCH --nodes=1
+#SBATCH --cpus-per-task=48
+#SBATCH --time=02:00:00
+#SBATCH --mem=1024G
+#SBATCH --job-name=convd
+#SBATCH --mail-type=BEGIN,END,FAIL
+#SBATCH --mail-user=22751096@student.uwa.edu.au
+#SBATCH --partition=cits3402
+#SBATCH --output=conv_test_1250000x200000_3x3_dynamic.out
+#SBATCH --error=conv_test.err
+ 
+ 
+gcc -fopenmp conv_test.c -o conv_test
+ 
+./conv_test -H 1250000 -W 200000 -kH 3 -kW 3
 ```
