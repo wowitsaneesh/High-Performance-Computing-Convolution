@@ -88,7 +88,7 @@ static void conv2d_omp_stride(
             for (int ki = 0; ki < kH; ki++) {
                 for (int kj = 0; kj < kW; kj++) {
                     int fi = input_i + ki - padH;
-                    int fj = input_j + kW - padW;
+                    int fj = input_j + kj - padW;   // <-- FIXED: was kW instead of kj
                     
                     if (fi >= 0 && fi < H && fj >= 0 && fj < W) {
                         sum += f[fi][fj] * g[ki][kj];
@@ -599,4 +599,5 @@ int main(int argc, char **argv) {
     
     MPI_Finalize();
     return 0;
+
 }
