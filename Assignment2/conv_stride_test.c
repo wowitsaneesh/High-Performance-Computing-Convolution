@@ -10,6 +10,9 @@
 #include <mpi.h>
 #include <math.h>
 
+float **allocate_matrix(int H, int W);
+void free_matrix(float **matrix, int H);
+
 // Calculate output dimensions with stride
 int calc_output_height(int H, int kH, int sH) {
     return (int)ceil((double)H / sH);
